@@ -2,29 +2,29 @@
   "$schema": "https://schemas.vibex.dev/plugin/v4/plugin.schema.json",
   "manifestVersion": 4,
   "apiVersion": "2.0",
-  "id": "vibex.browser",
-  "publisher": "vibex",
+  "id": "dimo.browser",
+  "publisher": "dimo",
   "version": "2.0.0",
   "name": "Browser",
   "readme": "README.md",
   "engines": {
-    "vibex": ">=0.1.3 <1.0.0",
+    "dimo": ">=0.1.3 <1.0.0",
     "pluginSdk": "^2.0.0"
   },
   "content": {
     "root": "contents",
-    "index": ".vibex-plugin/content.index.json"
+    "index": ".dimo-plugin/content.index.json"
   },
   "config": {
     "schema": {
       "type": "object",
-      "x-vibex-config-form": false,
+      "x-dimo-config-form": false,
       "additionalProperties": false,
       "properties": {
         "defaultTarget": {
           "type": "object",
           "title": "Where links open",
-          "description": "Default destination for links clicked across VibeX surfaces.",
+          "description": "Default destination for links clicked across Dimo surfaces.",
           "additionalProperties": false,
           "properties": {
             "transcript": {
@@ -132,7 +132,7 @@
         "serviceAutoOpen": {
           "type": "string",
           "title": "Local service detection",
-          "description": "How VibeX responds when a dev server prints a localhost URL.",
+          "description": "How Dimo responds when a dev server prints a localhost URL.",
           "enum": [
             "off",
             "toast",
@@ -261,9 +261,9 @@
       "resource": "contents/mcps/browser.json"
     },
     {
-      "id": "vibex-browser",
+      "id": "dimo-browser",
       "kind": "content.skill",
-      "resource": "contents/skills/vibex-browser"
+      "resource": "contents/skills/dimo-browser"
     }
   ],
   "interface": {

@@ -1,17 +1,17 @@
 ---
-name: vibex-browser
-description: Drive VibeX's built-in Browser plugin and its MCP (vibex-browser-browser-tools). Use when the user wants to open, list, read, click, hover, type, press keys, select options, inspect console messages, screenshot, or close in-app browser tabs (GitHub, Baidu, docs, web apps)—not the system browser.
+name: dimo-browser
+description: Drive Dimo's built-in Browser plugin and its MCP (dimo-browser-browser-tools). Use when the user wants to open, list, read, click, hover, type, press keys, select options, inspect console messages, screenshot, or close in-app browser tabs (GitHub, Baidu, docs, web apps)—not the system browser.
 ---
 
-# VibeX Browser
+# Dimo Browser
 
-Use this Skill whenever the user wants to look at or operate a **web page inside VibeX**, not an external browser.
+Use this Skill whenever the user wants to look at or operate a **web page inside Dimo**, not an external browser.
 
-The tools live on the MCP server **`vibex-browser-browser-tools`**. They appear only after the Browser plugin is enabled **and** the current Agent session was opened or rebound after that. If the tools are missing, tell the user to enable **设置 → 浏览器 → 智能体工具**, then start a **new** session. Do not invent a fallback that opens the OS browser.
+The tools live on the MCP server **`dimo-browser-browser-tools`**. They appear only after the Browser plugin is enabled **and** the current Agent session was opened or rebound after that. If the tools are missing, tell the user to enable **设置 → 浏览器 → 智能体工具**, then start a **new** session. Do not invent a fallback that opens the OS browser.
 
 ## What this plugin is
 
-VibeX Browser is a dock tab next to the editor. Each dock tab is one page (`tabId`). Cookies stay in the app profile. The user can also open tabs from the right rail or the `+` menu, and configure all browser behavior under **设置 → 浏览器**.
+Dimo Browser is a dock tab next to the editor. Each dock tab is one page (`tabId`). Cookies stay in the app profile. The user can also open tabs from the right rail or the `+` menu, and configure all browser behavior under **设置 → 浏览器**.
 
 You do **not** control the address bar UI. You call MCP tools. New tabs you open with `browser_open_tab` show up in the workspace dock.
 
@@ -30,7 +30,7 @@ Levels:
 | --- | --- | --- |
 | 停止共享 / empty | missing / `none` | `browser_list_tabs` only (title, URL, tabId) |
 | 可读 | `read` | `browser_snapshot`, `browser_console_messages`, `browser_screenshot` |
-| 可读可操作 | `control` | all read tools + `browser_click`, `browser_hover`, `browser_type`, `browser_press_key`, `browser_select_option`, `browser_eval` (if enabled) |
+| 可读可操作 | `control` | all read tools + `browser_prefer`, `browser_click`, `browser_hover`, `browser_type`, `browser_press_key`, `browser_select_option`, `browser_eval` (if enabled) |
 
 If a tool returns `browser_grant_required`, tell the user to share that tab from the address-bar chip. If it returns `browser_control_required`, they shared read-only; ask them to switch to 可读可操作.
 
@@ -81,9 +81,20 @@ Reads console messages (`console.log/info/warn/error/debug`), uncaught `error` e
 
 ### `browser_screenshot`
 
-Arguments: `{ "tabId"?, "generation"?, "ref"?, "maxWidth"?: 1280, "format"?: "png" | "jpeg" }`.
+Arguments: `{ "tabId"?, "generation"?, "ref"?, "maxWidth"?: 1280, "format"?: "png" | "jpeg", "overMs"?, "everyMs"?, "reducedMotion"?, "colorScheme"?: "light" | "dark" | "no-preference" }`.
 
 Captures the visible viewport of a shared tab, or scrolls `ref` into view and crops to its bounding box when both `generation` and `ref` are provided. Returns an image block alongside dimensions. Requires at least **read** grant.
+
+- **Contact-sheet burst mode (`overMs` + `everyMs`)**: Pass `overMs` (up to `10000` ms) and `everyMs` (minimum `50` ms, e.g. `{ "overMs": 500, "everyMs": 100 }`) to sample frames across a time window and composite them into a single grid contact sheet with frame timestamps (`frames=6, over=500ms, every=100ms, timestamps=[0ms, 100ms, ...]`). Use this to inspect animations, skeleton-to-content transitions, or layout shifts in one visual turn.
+- **Deterministic snapshot (`reducedMotion` / `colorScheme`)**: Pass `"reducedMotion": true` to zero CSS transition/animation durations and finish active animations before capturing, or `"colorScheme": "dark" | "light"` to verify theme states deterministically.
+
+### `browser_prefer`
+
+Arguments: `{ "tabId"?, "reducedMotion"?: boolean, "colorScheme"?: "light" | "dark" | "no-preference", "settle"?: true }`.
+
+Applies deterministic rendering preferences on a shared tab:
+- `"reducedMotion": true` forces `prefers-reduced-motion: reduce`, injects zero-duration CSS transition/animation rules, and finishes running `document.getAnimations()` so subsequent snapshots and screenshots never catch mid-transition states.
+- `"colorScheme": "light" | "dark" | "no-preference"` updates `document.documentElement.style.colorScheme`, `data-theme`, and `window.matchMedia('(prefers-color-scheme: ...)')` and waits two `requestAnimationFrame` ticks (`settle: true` by default).
 
 ### `browser_click`
 
@@ -139,11 +150,11 @@ Runs JavaScript in the page. Depending on the user's **设置 → 浏览器 → 
 
 ### Search on a site (example)
 
-User: open GitHub and search `vibex`
+User: open GitHub and search `dimo`
 
 1. `browser_open_tab` `{ "url": "https://github.com" }`
 2. `browser_snapshot`, find the search input ref
-3. `browser_type` with `{ "ref": "e...", "generation": "...", "text": "vibex", "submit": true }`
+3. `browser_type` with `{ "ref": "e...", "generation": "...", "text": "dimo", "submit": true }`
 4. `browser_snapshot` results and report
 
 ## Errors

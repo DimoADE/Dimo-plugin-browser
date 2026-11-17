@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * MCP stdio server for built-in browser tools.
- * Host injects VIBEX_HOST_CALL_* when projecting this content.mcp.
+ * Host injects DIMO_HOST_CALL_* when projecting this content.mcp.
  * Framing accepts MCP NDJSON and LSP Content-Length. Tools are advertised
  * only while config.json toolsEnabled is true; eval is a separate switch.
  * Grant checks stay in Host BrowserService.
@@ -19,6 +19,7 @@ const pluginRoot = currentDir.endsWith(join('dist', 'mcp'))
 const SUPPORTED_PROTOCOLS = [
   '2024-11-05',
   '2025-03-26',
+  '2025-06-18',
   '2025-11-25',
   '2026-07-28',
 ];
@@ -28,7 +29,7 @@ const allTools = [
     name: 'browser_list_tabs',
     operation: 'tab.list',
     description:
-      "List pages in VibeX's built-in browser. Reading a page requires the user to share that tab.",
+      "List pages in Dimo's built-in browser. Reading a page requires the user to share that tab.",
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -138,7 +139,7 @@ const allTools = [
     name: 'browser_screenshot',
     operation: 'screenshot',
     description:
-      'Capture the visible viewport of a shared tab, or crop to one snapshot ref.',
+      'Capture the visible viewport of a shared tab, or crop to one snapshot ref. Optionally sample a contact sheet over a time window or apply deterministic rendering preferences.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -164,6 +165,59 @@ const allTools = [
           type: 'string',
           enum: ['png', 'jpeg'],
           description: 'Output image format (default png).',
+        },
+        overMs: {
+          type: 'integer',
+          description:
+            'Optional contact-sheet burst window in milliseconds (up to 10000). When paired with everyMs, samples frames across the window and composes a single contact sheet.',
+        },
+        everyMs: {
+          type: 'integer',
+          description:
+            'Optional frame sampling interval in milliseconds (minimum 50) for contact-sheet burst capture.',
+        },
+        reducedMotion: {
+          type: 'boolean',
+          description:
+            'When true, disables CSS transitions/animations and finishes active web animations before capturing.',
+        },
+        colorScheme: {
+          type: 'string',
+          enum: ['light', 'dark', 'no-preference'],
+          description:
+            'Optional deterministic color scheme override applied before capturing.',
+        },
+      },
+    },
+  },
+  {
+    name: 'browser_prefer',
+    operation: 'prefer',
+    description:
+      'Apply deterministic rendering preferences (prefers-reduced-motion, prefers-color-scheme) on a shared tab and wait for two animation frames to settle.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tabId: {
+          type: 'string',
+          description:
+            'Target tab ID. Optional when only one browser tab is open.',
+        },
+        reducedMotion: {
+          type: 'boolean',
+          description:
+            'When true, forces prefers-reduced-motion: reduce, zeroes CSS transition/animation durations, and finishes active animations.',
+        },
+        colorScheme: {
+          type: 'string',
+          enum: ['light', 'dark', 'no-preference'],
+          description:
+            'Override prefers-color-scheme and document color-scheme ("light", "dark", or "no-preference").',
+        },
+        settle: {
+          type: 'boolean',
+          description:
+            'Wait two requestAnimationFrame ticks for styles and layout to settle (default: true).',
         },
       },
     },
@@ -365,8 +419,8 @@ function fail(id, message, code = -32000) {
 }
 
 async function callHost(capability, operation, input) {
-  const url = process.env.VIBEX_HOST_CALL_URL ?? '';
-  const token = process.env.VIBEX_HOST_CALL_TOKEN ?? '';
+  const url = process.env.DIMO_HOST_CALL_URL ?? '';
+  const token = process.env.DIMO_HOST_CALL_TOKEN ?? '';
   if (!url || !token) {
     throw new Error(
       'host_call_unavailable: Host did not inject a plugin host.call connection; restart the Agent session after enabling the plugin'
@@ -511,10 +565,34 @@ function renderConsoleResult(result) {
 
 function renderCaptureResult(result) {
   const scope = result.target ? `ref=${result.target}` : 'viewport';
-  const summary = [
+  const timestamps = Array.isArray(result.timestampsMs)
+    ? result.timestampsMs
+    : Array.isArray(result.timestamps_ms)
+      ? result.timestamps_ms
+      : null;
+  const framesCount =
+    Number(
+      result.framesCount ??
+        result.frames_count ??
+        (timestamps ? timestamps.length : 1)
+    ) || 1;
+  const lines = [
     `### Screenshot (${scope}, ${result.width}x${result.height}, ${result.mime})`,
     `- URL: ${result.url}`,
-  ].join('\n');
+  ];
+  if (framesCount > 1 || (timestamps && timestamps.length > 0)) {
+    const overMs = result.overMs ?? result.over_ms ?? 0;
+    const everyMs = result.everyMs ?? result.every_ms ?? 0;
+    const tsFormatted = (timestamps ?? []).map((t) => `${t}ms`).join(', ');
+    const grid =
+      result.columns && result.rows
+        ? `, grid=${result.columns}x${result.rows}`
+        : '';
+    lines.push(
+      `- Contact sheet: frames=${framesCount}, over=${overMs}ms, every=${everyMs}ms, timestamps=[${tsFormatted}]${grid}`
+    );
+  }
+  const summary = lines.join('\n');
   const blocks = [{ type: 'text', text: summary }];
   if (result.data && result.mime) {
     blocks.push({
@@ -524,6 +602,22 @@ function renderCaptureResult(result) {
     });
   }
   return blocks;
+}
+
+function renderPreferResult(result) {
+  const lines = [
+    '### Browser preferences applied',
+    `- Tab: \`${result?.tabId ?? ''}\``,
+    `- URL: ${result?.url ?? ''}`,
+    `- Reduced motion: \`${Boolean(result?.reducedMotion)}\``,
+    `- Color scheme: \`${result?.colorScheme ?? 'no-preference'}\``,
+    `- Settled: \`${result?.settled !== false}\``,
+    '',
+    '```json',
+    JSON.stringify(result),
+    '```',
+  ];
+  return [{ type: 'text', text: lines.join('\n') }];
 }
 
 function renderActResult(verb, result) {
@@ -571,6 +665,8 @@ function formatToolOutput(toolName, result) {
       return renderConsoleResult(result);
     case 'browser_screenshot':
       return renderCaptureResult(result);
+    case 'browser_prefer':
+      return renderPreferResult(result);
     case 'browser_click':
       return renderActResult('click', result);
     case 'browser_hover':
@@ -588,11 +684,44 @@ function formatToolOutput(toolName, result) {
   }
 }
 
+const MODERN_MCP_PROTOCOL = '2026-07-28';
+const SERVER_INFO = { name: 'dimo-browser', version: '1.0.0' };
+
 function negotiateProtocol(requested) {
   if (typeof requested === 'string' && SUPPORTED_PROTOCOLS.includes(requested)) {
     return requested;
   }
-  return '2026-07-28';
+  return '2025-11-25';
+}
+
+function isModernRequest(params) {
+  return (
+    params &&
+    params._meta &&
+    params._meta['io.modelcontextprotocol/protocolVersion'] ===
+      MODERN_MCP_PROTOCOL
+  );
+}
+
+function discoverResult() {
+  return {
+    resultType: 'complete',
+    supportedVersions: [MODERN_MCP_PROTOCOL],
+    capabilities: { tools: {} },
+    _meta: { 'io.modelcontextprotocol/serverInfo': SERVER_INFO },
+  };
+}
+
+function modernize(params, result) {
+  if (!isModernRequest(params)) return result;
+  return {
+    resultType: 'complete',
+    ...result,
+    _meta: {
+      ...(result._meta || {}),
+      'io.modelcontextprotocol/serverInfo': SERVER_INFO,
+    },
+  };
 }
 
 function isUnimplementedHostError(error) {
@@ -621,6 +750,119 @@ async function resolveFallbackTab(explicitTabId) {
   throw new Error(
     'browser_invalid: more than one browser tab is open; pass tabId (see browser_list_tabs)'
   );
+}
+
+function buildPreferEvalScript(args) {
+  const reducedMotion =
+    typeof args.reducedMotion === 'boolean' ? args.reducedMotion : null;
+  const colorScheme =
+    args.colorScheme === 'light' ||
+    args.colorScheme === 'dark' ||
+    args.colorScheme === 'no-preference'
+      ? args.colorScheme
+      : null;
+  const settle = args.settle !== false;
+  return `(function(){
+    var rm = ${JSON.stringify(reducedMotion)};
+    var cs = ${JSON.stringify(colorScheme)};
+    var styleId = '__dimo_prefer_reduced_motion';
+    if (rm === true) {
+      var el = document.getElementById(styleId);
+      if (!el) {
+        el = document.createElement('style');
+        el.id = styleId;
+        (document.head || document.documentElement).appendChild(el);
+      }
+      el.textContent = '*, *::before, *::after { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-delay: 0s !important; scroll-behavior: auto !important; }';
+      if (typeof document.getAnimations === 'function') {
+        document.getAnimations().forEach(function(a) {
+          try { a.finish(); } catch (e) {}
+        });
+      }
+      document.documentElement.setAttribute('data-reduced-motion', 'reduce');
+    } else if (rm === false) {
+      var existing = document.getElementById(styleId);
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      document.documentElement.removeAttribute('data-reduced-motion');
+    }
+    if (cs) {
+      if (cs === 'no-preference') {
+        document.documentElement.style.colorScheme = '';
+        document.documentElement.removeAttribute('data-theme');
+        document.documentElement.classList.remove('dark', 'light');
+      } else {
+        document.documentElement.style.colorScheme = cs;
+        document.documentElement.setAttribute('data-theme', cs);
+        document.documentElement.classList.remove('dark', 'light');
+        document.documentElement.classList.add(cs);
+      }
+    }
+    window.__dimoPreferences = Object.assign({}, window.__dimoPreferences || {}, {
+      reducedMotion: rm !== null ? rm : (window.__dimoPreferences && window.__dimoPreferences.reducedMotion),
+      colorScheme: cs !== null ? cs : (window.__dimoPreferences && window.__dimoPreferences.colorScheme)
+    });
+    if (!window.__dimoMatchMediaPatched && typeof window.matchMedia === 'function') {
+      var origMatchMedia = window.matchMedia.bind(window);
+      window.matchMedia = function(query) {
+        var mql = origMatchMedia(query);
+        var q = String(query || '').toLowerCase();
+        var prefs = window.__dimoPreferences || {};
+        var override = null;
+        if (typeof prefs.reducedMotion === 'boolean' && q.indexOf('prefers-reduced-motion') !== -1) {
+          if (q.indexOf('reduce') !== -1) override = prefs.reducedMotion;
+          else if (q.indexOf('no-preference') !== -1) override = !prefs.reducedMotion;
+        }
+        if (typeof prefs.colorScheme === 'string' && prefs.colorScheme !== 'no-preference' && q.indexOf('prefers-color-scheme') !== -1) {
+          if (q.indexOf('dark') !== -1) override = prefs.colorScheme === 'dark';
+          else if (q.indexOf('light') !== -1) override = prefs.colorScheme === 'light';
+        }
+        if (override === null) return mql;
+        return Object.assign({}, mql, { matches: override, media: mql.media });
+      };
+      window.__dimoMatchMediaPatched = true;
+    }
+    if (${JSON.stringify(settle)} && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(function() {
+        window.requestAnimationFrame(function() {});
+      });
+    }
+    return JSON.stringify({
+      ok: true,
+      url: location.href,
+      reducedMotion: Boolean(window.__dimoPreferences && window.__dimoPreferences.reducedMotion),
+      colorScheme: (window.__dimoPreferences && window.__dimoPreferences.colorScheme) || 'no-preference',
+      settled: ${JSON.stringify(settle)}
+    });
+  })()`;
+}
+
+async function applyFallbackPrefer(tab, args) {
+  const settle = args.settle !== false;
+  const evalRes = await callHost('browser', 'eval.run', {
+    tabId: tab.tabId,
+    evalApproval: 'silent',
+    code: buildPreferEvalScript(args),
+  });
+  if (settle) {
+    await new Promise((r) => setTimeout(r, 34));
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(String(evalRes?.value ?? '{}'));
+  } catch {
+    parsed = null;
+  }
+  return {
+    ok: true,
+    tabId: tab.tabId,
+    url: parsed?.url || tab.url,
+    reducedMotion:
+      typeof parsed?.reducedMotion === 'boolean'
+        ? parsed.reducedMotion
+        : Boolean(args.reducedMotion),
+    colorScheme: parsed?.colorScheme || args.colorScheme || 'no-preference',
+    settled: settle,
+  };
 }
 
 async function executeBrowserTool(tool, args) {
@@ -654,6 +896,10 @@ async function executeBrowserTool(tool, args) {
   } catch (error) {
     if (!isUnimplementedHostError(error)) {
       throw error;
+    }
+    if (tool.operation === 'prefer') {
+      const tab = await resolveFallbackTab(args.tabId);
+      return await applyFallbackPrefer(tab, args);
     }
     if (tool.operation === 'console.read') {
       const tab = await resolveFallbackTab(args.tabId);
@@ -706,6 +952,19 @@ async function executeBrowserTool(tool, args) {
     }
     if (tool.operation === 'screenshot') {
       const tab = await resolveFallbackTab(args.tabId);
+      if (args.reducedMotion != null || args.colorScheme != null) {
+        await applyFallbackPrefer(tab, args).catch(() => null);
+      }
+      const overMs = Number(args.overMs ?? 0) || 0;
+      const everyMs = Number(args.everyMs ?? 0) || 0;
+      const isBurst = overMs > 0 && everyMs >= 50 && overMs >= everyMs;
+      const timestampsMs = [];
+      if (isBurst) {
+        const clampedOver = Math.min(10000, overMs);
+        for (let t = 0; t <= clampedOver; t += everyMs) {
+          timestampsMs.push(t);
+        }
+      }
       const frame = await callHost('browser', 'surface.freeze', {
         tabId: tab.tabId,
       }).catch(() => null);
@@ -717,6 +976,14 @@ async function executeBrowserTool(tool, args) {
         data: frame?.data || '',
         width: Number(args.maxWidth) || 1280,
         height: 800,
+        ...(timestampsMs.length > 1
+          ? {
+              framesCount: timestampsMs.length,
+              overMs: Math.min(10000, overMs),
+              everyMs,
+              timestampsMs,
+            }
+          : {}),
       };
     }
     throw error;
@@ -730,7 +997,7 @@ function handleMessage(message) {
     reply(id, {
       protocolVersion: negotiateProtocol(params?.protocolVersion),
       capabilities: { tools: {} },
-      serverInfo: { name: 'vibex-browser', version: '1.0.0' },
+      serverInfo: SERVER_INFO,
     });
     return;
   }
@@ -738,15 +1005,15 @@ function handleMessage(message) {
     return;
   }
   if (method === 'ping') {
-    if (id != null) reply(id, {});
+    if (id != null) reply(id, modernize(params, {}));
     return;
   }
   if (method === 'server/discover') {
-    reply(id, { versions: SUPPORTED_PROTOCOLS });
+    reply(id, discoverResult());
     return;
   }
   if (method === 'tools/list') {
-    reply(id, { tools: advertisedTools() });
+    reply(id, modernize(params, { tools: advertisedTools() }));
     return;
   }
   if (method === 'tools/call') {
@@ -792,13 +1059,17 @@ function handleMessage(message) {
       if (args.waitForLoad == null) {
         args.waitForLoad = true;
       }
+    } else if (tool.name === 'browser_prefer') {
+      if (args.settle == null) {
+        args.settle = true;
+      }
     } else if (tool.name === 'browser_eval') {
       args.evalApproval = config.evalApproval;
     }
     executeBrowserTool(tool, args)
       .then((result) => {
         const content = formatToolOutput(tool.name, result);
-        reply(id, { content });
+        reply(id, modernize(params, { content }));
       })
       .catch((error) => {
         replyToolError(
@@ -873,7 +1144,7 @@ function onStdin(chunk) {
 process.stdin.on('data', onStdin);
 process.stdin.on('error', (error) => {
   try {
-    process.stderr.write(`[vibex-browser] stdin ${error}\n`);
+    process.stderr.write(`[dimo-browser] stdin ${error}\n`);
   } catch {
     // stderr may already be closed with the parent.
   }
@@ -881,7 +1152,7 @@ process.stdin.on('error', (error) => {
 process.on('uncaughtException', (error) => {
   try {
     process.stderr.write(
-      `[vibex-browser] ${error instanceof Error ? error.stack : String(error)}\n`
+      `[dimo-browser] ${error instanceof Error ? error.stack : String(error)}\n`
     );
   } catch {
     // Keep the MCP process alive for the next request.
